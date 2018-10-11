@@ -2,17 +2,15 @@ import java.io.FileWriter
 
 import cats.{Applicative, Monad}
 import cats.implicits._
-import cats.effect.IO
+import cats.effect.{IO, Sync}
+import io.chrisdavenport.log4cats.slf4j.Slf4jLogger
 
 import scala.{Console => ScalaConsole}
 import scala.io.Source
 
 object Program {
 
-  trait Logger[F[_]] {
-    def log(msg: String): F[Unit]
-  }
-
+  // Algebras (their methods represent side effects)
   trait FileSystem[F[_]] {
     def read(path: String): F[String]
   }
@@ -22,17 +20,7 @@ object Program {
     def write(l: String): F[Unit]
   }
 
-  final class FileDumper[F[_]: Monad](FS: FileSystem[F], C: Console[F], L: Logger[F]) {
-    def askPathAndDump(): F[Unit] = {
-      for {
-        _ <- C.write("Enter filename:")
-        filename <- C.read()
-        _ <- L.log(s"Filename entered: $filename")
-        fileContent <- FS.read(filename)
-        _ <- C.write(fileContent)
-      } yield ()
-    }
-  }
+  // Algebras implementation for a given effect
 
   final object FileSystemIO extends FileSystem[IO] {
     override def read(path: String): IO[String] = IO(Source.fromFile(path).mkString)
@@ -43,15 +31,25 @@ object Program {
     override def write(l: String): IO[Unit] = IO(println(l))
   }
 
-  final object LoggerIO extends Logger[IO] {
-    override def log(msg: String): IO[Unit] = IO{
-      val fw = new FileWriter("file.log", true)
-      try { fw.write(msg) } finally fw.close()
+  // Our business
+
+  final class FileDumper[F[_]: Sync](FS: FileSystem[F], C: Console[F]) {
+    def askPathAndDump(): F[Unit] = {
+      for {
+        logger <- Slf4jLogger.create[F]
+        _ <- C.write("Enter filename:")
+        filename <- C.read()
+        _ <- logger.debug(s"Filename provided: $filename")
+        fileContent <- FS.read(filename)
+        _ <- logger.debug(s"File $filename read correctly")
+        _ <- C.write(fileContent)
+        _ <- logger.info(s"File $filename written to console")
+      } yield ()
     }
   }
 
   def main(args: Array[String]): Unit = {
-    val fd = new FileDumper(FileSystemIO, ConsoleIO, LoggerIO)
+    val fd = new FileDumper(FileSystemIO, ConsoleIO)
     fd.askPathAndDump().unsafeRunSync()
   }
 
